@@ -1,4 +1,5 @@
 library(tidyverse)
+library(WRS2)
 library(rstatix)
 library(patchwork)
 library(EnvStats)
@@ -9,11 +10,10 @@ data <- list.files(pattern = "*.csv", full.names = F) |>
     matrix.names = c("AMPH", "BIN", "CR16", "NWASP", "TBP", 
           "TKS4", "TKS4b", "TKS4L", "TKS5L", "TTP", "WIP")))
 
-# PRE ANALYSIS -----
-## 
+# PREPROCESING -----
+## TECH REPEATS
 for (i in 1:length(data)){
   data[[i]]$session <- as.factor(data[[i]]$session)
-  data[[i]]$group <- as.factor(data[[i]]$group)
   data[[i]] |> filter(Cq > 0) |> group_by(name, session) |> 
     summarise(group = unique(group), Cq = mean(Cq), 
               session = unique(session), eff = mean(eff), 
@@ -25,20 +25,46 @@ for (i in 1:length(data)){
   data[[i]]$N0 <- data[[i]]$threshold/(data[[i]]$eff)^data[[i]]$Cq
 }
 
-## N0 OUTLIERS
+## DUPLICATES
+###
 for (i in 1:length(data)){
-  quartiles <- quantile(data[[i]]$N0, probs=c(.25, .75), na.rm = FALSE)
-  IQR <- IQR(data[[i]]$N0)
-  
-  Lower <- quartiles[1] - 1.5*IQR
-  Upper <- quartiles[2] + 1.5*IQR 
-  
-  data[[i]] <- subset(data[[i]], data[[i]]$N0 > Lower & data[[i]]$N0 < Upper)
+  data[[i]] |> group_by(name) |> 
+    summarise(group = group, N0 = N0, n = n(), sd = sd(N0)) -> data[[i]]
+}
+
+### VIEW DUPL SD 
+for (i in 1:length(data)){
+  print(ggplot(data[[i]], aes(x = log10(sd)))+
+    geom_density()+
+    labs(title = names(data)[i], x = 'SD', y = ''))
+}
+
+### DUPL REMOVAL
+for (i in 1:length(data)){
+  names(data)[[i]] |> print()
+  sd <- data[[i]]$sd |> c() |> na.omit()
+  mad <- mad(sd)
+  if (is.na(mad)){
+    print(dim(data[[i]]))} 
+  else{
+    Lower <- median(sd) - 5*mad
+    Upper <- median(sd) + 5*mad
+    data[[i]] <- subset(data[[i]], data[[i]]$sd > Lower & data[[i]]$sd < Upper | is.na(data[[i]]$sd))
+    print(dim(data[[i]]))
+  } 
+}
+
+### DUPL AVERAGING
+for (i in 1:length(data)){
+  names(data)[[i]] |> print()
+  data[[i]] |> group_by(name) |> 
+    summarise(group = unique(group), N0 = mean(N0)) -> data[[i]]
+  print(dim(data[[i]]))
 }
 
 for (i in 1:length(data)){
-  data[[i]] |> group_by(name) |> 
-    summarise(group = unique(group), N0 = mean(N0)) -> data[[i]]
+  names(data)[[i]] |> print()
+  data[[i]] |> group_by(group) |> summarise(n=n()) |> print()
 }
 
 ## PREVIEW
@@ -59,6 +85,32 @@ for (i in 1:length(data)){
 
 data <- data[-c(5, 12)]
 
+## NORMALIZED EXPRESSION
+for (i in 1:length(data)){
+  data[[i]]$dc <- data[[i]]$N0.y/data[[i]]$N0.x
+}
+
+## MEDIAN SUBTRACTION
+for (i in 1:length(data)){
+  data[[i]] |> filter(group == 'Adjacent') |> select (dc) |> drop_na() |> 
+    as.list() |> lapply(median) -> m
+  data[[i]]$ddc <- data[[i]]$dc - m[[1]]
+}
+
+## OUTLIERS
+for (i in 1:length(data)){
+  mad <- mad(data[[i]]$ddc)
+  Lower <- median(data[[i]]$ddc) - 5*mad
+  Upper <- median(data[[i]]$ddc) + 5*mad
+  data[[i]] <- subset(data[[i]], data[[i]]$ddc > Lower & data[[i]]$ddc < Upper)
+}
+
+for (i in 1:length(data)){
+  names(data)[[i]] |> print()
+  data[[i]] |> group_by(group) |> summarise(n=n()) |> print()
+}
+
+# PRE ANALYSIS
 ## GOI ~ REF
 for (i in 1:length(data)){
   print(ggplot(data[[i]], aes(x = N0.y, y = N0.x, col = group)) + 
@@ -68,39 +120,13 @@ for (i in 1:length(data)){
 
 for (i in 1:length(data)){
   names(data)[[i]] |> print()
-  summary(aov(data = data[[i]],  N0.y ~ N0.x+group)) |> print()
+  #data[[i]] |> (formula = N0.y ~ N0.x) |> print()
 }
   
-## NORMALIZED EXPRESSION
-for (i in 1:length(data)){
-  data[[i]]$dc <- data[[i]]$N0.y/data[[i]]$N0.x
-}
-
-## OUTLIERS
-for (i in 1:length(data)){
-  quartiles <- quantile(data[[i]]$dc, probs=c(.25, .75), na.rm = FALSE)
-  IQR <- IQR(data[[i]]$dc)
-  
-  Lower <- quartiles[1] - 1.5*IQR
-  Upper <- quartiles[2] + 1.5*IQR 
-  
-  data[[i]] <- subset(data[[i]], data[[i]]$dc > Lower & data[[i]]$dc < Upper)
-}
-
-for (i in 1:length(data)){
-  names(data)[[i]] |> print()
-  data[[i]] |> group_by(group) |> identify_outliers(dc) |> print()
-}
-
-for (i in 1:length(data)){
-  names(data)[[i]] |> print()
-  data[[i]] |> group_by(group) |> summarise(n=n()) |> print()
-}
-
 # ANALISYS 1 -----
-## PREVIEW
+## PLOTING
 for (i in 1:length(data)){
-  print(ggplot(data[[i]], aes(x = group, y = dc))+
+  print(ggplot(data[[i]], aes(x = group, y = ddc))+
           geom_boxplot()+
           labs(title = names(data)[[i]], x = 'group', y = 'NE'))
 }
@@ -111,33 +137,13 @@ shapiro <- function(tib){
               'Luminal B HER+', 'HER-Enriched', 'Triple Negative')
   for(i in groups){
     print(i)
-    tib |> filter(group == i) |> ungroup() |> shapiro_test(dc) |> print()
+    tib |> filter(group == i) |> ungroup() |> shapiro_test(ddc) |> print()
   }
 }
 
 for (i in 1:length(data)){
   names(data)[[i]] |> print()
   shapiro(data[[i]])
-}
-
-## HOMOGENEITY
-for (i in 1:length(data)){
-  names(data)[[i]] |> print()
-  data[[i]] |> levene_test(dc ~ group) |> print()
-}
-
-## MEDIAN SUBTRACTION
-for (i in 1:length(data)){
-  data[[i]] |> filter(group == 'Adjacent') |> select (dc) |> drop_na() |> 
-    as.list() |> lapply(median) -> m
-  data[[i]]$ddc <- data[[i]]$dc - m[[1]]
-}
-
-## PLOTTING
-for (i in 1:length(data)){
-  print(ggplot(data[[i]], aes(x = group, y = ddc))+
-          geom_boxplot()+
-          labs(title = names(data)[i], x = 'group', y = 'FC'))
 }
 
 ## TESTS NOVICE LEVEL
@@ -148,33 +154,23 @@ for (i in 1:length(data)){
 
 for (i in 1:length(data)){
   names(data)[i] |> print()
-  data[[i]] |> tukey_hsd(ddc ~ group) |> print()
-}
-
-for (i in 1:length(data)){
-  names(data)[i] |> print()
-  wdata <- data[[i]]
-  wdata$group <- as.character(wdata$group)
-  wdata |> wilcox_test(ddc ~ group) |> print()
+  data[[i]] |> wilcox_test(ddc ~ group) |> print()
 }
 
 ## TESTS APPRANTICE LEVEL
 for (i in 1:length(data)){
   names(data)[i] |> print()
-  wdata <- data[[i]]
-  wdata$group <- as.character(wdata$group)
-  #wdata |> WRS2::t1way(formula = ddc ~ group) |> print()
-  wdata |> WRS2::lincon(formula = dc ~ group) |> print()
+  data[[i]] |> t1way(formula = ddc ~ group) |> print()
+  #data[[i]] |> lincon(formula = ddc ~ group) |> print()
 }
 
 ## TESTS BOOTSTRAP
 for (i in 1:length(data)){
   names(data)[i] |> print()
-  wdata <- data[[i]]
-  wdata$group <- as.character(wdata$group)
-  wdata |> WRS2::t1waybt(formula = ddc ~ group) |> print()
-  wdata |> WRS2::mcppb20(formula = ddc ~ group, nboot = 5000) |> print()
-  #wdata |> WRS2::Qanova(formula = ddc ~ group) |> print()
+  #data[[i]] |> t1waybt(formula = ddc ~ group, nboot = 5000) |> print()
+  data[[i]] |> mcppb20(formula = ddc ~ group, nboot = 5000) |> print()
+  #data[[i]] |> Qanova(formula = ddc ~ group, q = c(0.25, 0.5, 0.75), nboot = 1000) |> print()
+  #data[[i]] |> qcomhd(formula = ddc ~ group) |> print()
 }
 
 # ANALISTS 2 -----
@@ -189,21 +185,28 @@ dt|> reduce(full_join, by = c('name', 'group')) |>
   ungroup() -> dt
 
 ## CORRELATIONS
-GGally::ggpairs(dt[3:12])
-WRS2::pbcor(dt$TKS4L, dt$TKS4b)
+### BEND
+dt |> filter(group == 'Adjacent') |> select(3:12) |> pball()
+dt |> filter(group == 'Luminal A') |> select(3:12) |> pball()
+dt |> filter(group == 'Luminal B HER-') |> select(3:12) |> pball()
+dt |> filter(group == 'Luminal B HER+') |> select(3:12) |> pball()
+dt |> filter(group == 'Triple Negative') |> select(3:12) |> pball()
+dt |> filter(group == 'HER-Enriched') |> select(3:12) |> pball()
 
-
+### WINS
+dt |> filter(group == 'Adjacent') |> select(3:12) |> winall()
+dt |> filter(group != 'Adjacent') |> select(3:12) |> winall()
 
 ## TRASH
-lm(data = dt, TKS4 ~ TKS4L + TKS4b)
-
-summary(aov(data = dt, BN ~ group))
+dt$R <- dt$NWASP/dt$CR16
+dt |> t1way(formula = R ~ group)
+dt |> Qanova(formula = R ~ group)
 
 ## DIMENTIONALITY REDUCTION 
-dt[-c(4, 7, 8, 11, 13)] |> drop_na() -> X
+dt[-c(4, 7, 8, 11, 12)] |> drop_na() -> X
 
 pca <- prcomp(X[, 3:length(X)], scale. = T, center = T)
-tsne <- Rtsne::Rtsne(X[, 3:length(X)], perplexity = 5)
+tsne <- Rtsne::Rtsne(X[, 3:length(X)], perplexity = 4)
 
 pcadata <- cbind(X[, 1:2], pca$x)
 tsnedata <- data.frame(X[,1:2],
